@@ -258,7 +258,7 @@
     <div class="knv-card">
       <div class="knv-card-title">施工場所・発注区分（絞り込み用）</div>
       <div class="knv-field">
-        <label>発注者・関係機関の区分</label>
+        <label>発注者・関係機関 of 区分</label>
         <select id="orderType">
           <option value="">選択してください</option>
           <option value="国">国（国道・国の機関）</option>
@@ -436,6 +436,27 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>
 (function(){
+  // --- ネット環境用のデータ保存設定（おまじない） ---
+  const storageHelper = {
+    get: async (key) => {
+      try {
+        if (typeof window !== 'undefined' && window.storage && typeof window.storage.get === 'function') {
+          return await window.storage.get(key);
+        }
+      } catch(e) {}
+      return { value: localStorage.getItem(key) };
+    },
+    set: async (key, value) => {
+      try {
+        if (typeof window !== 'undefined' && window.storage && typeof window.storage.set === 'function') {
+          await window.storage.set(key, value);
+          return;
+        }
+      } catch(e) {}
+      localStorage.setItem(key, value);
+    }
+  };
+
   const TAGS = [
     "道路に関わる（掘削・足場・車両停車等）",
     "河川区域に関わる",
@@ -803,12 +824,13 @@
     "01_2_koujikanrisya_todoke.docx":"工事監理者決定（変更）届（様式2号）",
     "02_2-2_koujisekousya_todoke.docx":"工事施工者決定（変更）届（様式2号の2）",
   };
+
   function guessTemplateName(filename){
     const key = filename.toLowerCase();
     if (FILENAME_TITLE_MAP[key]) return FILENAME_TITLE_MAP[key];
     return filename.replace(/\.[^.]+$/, '');
   }
-  const MANUAL_KEYWORDS = ['マニュアル','手引き','手引','記入例','記載例','記載要領','記入要領','手順','ガイド','説明書','の手引','要領','チェックリスト','q&a','ｑ＆ａ','よくある質問','faq'];
+  const MANUAL_KEYWORDS = ['マニュアル','手引き','手引','記入例','記載例','記入要領','記入要領','手順','ガイド','説明書','の手引','要領','チェックリスト','q&a','ｑ＆ａ','よくある質問','faq'];
   function guessDocType(filename, guessedName){
     const key = (filename + ' ' + (guessedName||'')).toLowerCase();
     return MANUAL_KEYWORDS.some(k => key.includes(k)) ? 'manual' : 'form';
@@ -872,16 +894,909 @@
     });
   }
   async function classifyFileContent(fileInfo, filename){
-    const prompt = 'あなたは建設業の許認可・入札関連書類を分類する専門家です。添付（またはテキスト）の内容を読み、次のJSON形式のみで出力してください（説明文・コードブロック記号は不要）。\n' +
-      '{"name":"（書類の正式名称。様式番号が分かれば含める）","docType":"form"（記入して提出する様式そのものの場合）または"manual"（記入方法の説明・手引き・記入例・マニュアルの場合）,"summary":"（manualの場合のみ、記入時に注意すべき点を自分の言葉で3〜6項目、箇条書きでまとめる。formの場合は空文字）"}';
-    const content = fileInfo.contentBlock
-      ? [fileInfo.contentBlock, { type: 'text', text: prompt }]
-      : [{ type: 'text', text: '【ファイル名】' + filename + '\n【本文抜粋】\n' + (fileInfo.textContent || '（本文を抽出できませんでした）') + '\n\n' + prompt }];
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 700, messages: [{ role: 'user', content }] })
+    // GitHub Pagesなどの標準ブラウザ環境ではCORSおよびサーバー側の処理が必要なため
+    // このモック用テキストを返します。
+    return { name: guessTemplateName(filename), docType: guessDocType(filename, filename), summary: "" };
+  }
+
+  const PREFECTURES = ["北海道","青森県","岩手県","宮城県","秋田県","山形県","福島県","茨城県","栃木県","群馬県","埼玉県","千葉県","東京都","神奈川県","新潟県","富山県","石川県","福井県","山梨県","長野県","岐阜県","静岡県","愛知県","三重県","滋賀県","京都府","大阪府","兵庫県","奈良県","和歌山県","鳥取県","島根県","岡山県","広島県","山口県","徳島県","香川県","愛媛県","高知県","福岡県","佐賀県","長崎県","熊本県","大分県","宮崎県","鹿児島県","沖縄県"];
+  const HIROSHIMA_CITIES = ["広島市","呉市","竹原市","三原市","尾道市","福山市","府中市","三次市","庄原市","大竹市","東広島市","廿日市市","安芸高田市","江田島市","府中町","海田町","熊野町","坂町","安芸太田町","北広島町","大崎上島町","世羅町","神石高原町"];
+
+  function populateRegionSelects(){
+    const prefSel = document.getElementById('regionPref');
+    prefSel.innerHTML = '<option value="">選択してください</option>' + PREFECTURES.map(p => `<option value="${p}">${p}</option>`).join('');
+    const citySel = document.getElementById('regionCityHiroshima');
+    citySel.innerHTML = '<option value="">選択してください</option>' + HIROSHIMA_CITIES.map(c => `<option value="${c}">${c}</option>`).join('');
+  }
+  function toggleCityInput(){
+    const isHiroshima = document.getElementById('regionPref').value === '広島県';
+    document.getElementById('regionCityHiroshimaWrap').style.display = isHiroshima ? '' : 'none';
+    document.getElementById('regionCityOtherWrap').style.display = isHiroshima ? 'none' : '';
+  }
+
+  let selectedTags = new Set();
+  let followupAnswers = {};
+  let injectedTags = new Set();
+  let customRules = [];
+  let lastResults = [];
+  const COMPANY_FIELDS = [
+    {key:"companyName", label:"商号（会社名）"},
+    {key:"repName", label:"代表者氏名"},
+    {key:"repAddr", label:"代表者住所"},
+    {key:"officeAddr", label:"営業所所在地"},
+    {key:"tel", label:"電話番号（FAX含む）"},
+    {key:"licenseNo", label:"建設業許可番号"},
+    {key:"corporateNo", label:"法人番号"},
+    {key:"waterworksNo", label:"指定給水装置工事事業者 指定番号（取得済みなら）"},
+    {key:"sewerNo", label:"下水道排水設備指定工事店 指定番号（取得済みなら）"},
+    {key:"bidderId", label:"安芸太田町 入札参加資格 業者ID（取得済みなら）"},
+    {key:"technicians", label:"技術者名簿（氏名・保有資格。改行区切り）", type:"textarea"},
+  ];
+
+  const DEFAULT_COMPANY = {
+    companyName: "筒賀建設株式会社",
+    repName: "佐々木 研次",
+    repAddr: "〒731-3702 広島県山県郡安芸太田町大字中筒賀540-2",
+    officeAddr: "〒731-3702 広島県山県郡安芸太田町大字中筒賀540-2",
+    tel: "TEL：0826-28-1877／FAX：0826-28-1853，0826-28-2005",
+    licenseNo: "34001985",
+    corporateNo: "3240001024062",
+    waterworksNo: "",
+    sewerNo: "（安芸太田町 下水道排水設備指定工事店として登録あり／指定番号は要確認）",
+    bidderId: "416（安芸太田町 建設工事等入札参加資格）",
+    technicians:
+      "佐々木 研次：一級建築士、1級建築施工管理技士、一級土木施工管理技士、二級管工事施工管理技士、浄化槽設備士、建築応急危険度判定士\n" +
+      "松栄 勝則：一級建築士、2級建築施工管理技士、二級管工事施工管理技士、二級土木施工管理技士、建築応急危険度判定士\n" +
+      "池田 一也：一級土木施工管理技士、二級土木施工管理技士、雇用管理者\n" +
+      "佐々木 晃史：一級土木施工管理技士、二級土木施工管理技士\n" +
+      "滝口 裕訓：2級建築施工管理技士、下水道排水設備責任技術者\n" +
+      "大村 知裕：2級建築施工管理技士\n" +
+      "掛 正則：（技能講習・特別教育等のみ）\n" +
+      "西村 浩幸：（技能講習・特別教育等のみ）\n" +
+      "梅田 大記：（保有資格データなし）",
+  };
+
+  const QUALIFICATION_CATALOG = [
+    { name: "指定給水装置工事事業者の指定", law: "水道法25条の2", office: "安芸太田町（上下水道担当課）",
+      docs: ["指定給水装置工事事業者指定申請書","誓約書（水道法25条の3関連）","機械器具調書","給水装置工事主任技術者 選任届","（変更時）指定事項変更届出書","（廃止・休止・再開時）届出書"],
+      note: "上水道の給水装置工事を請け負うために必要な、会社としての指定登録です。" },
+    { name: "下水道排水設備指定工事店の指定", law: "安芸太田町下水道排水設備指定工事店規則", office: "安芸太田町（下水道担当課）",
+      docs: ["下水道排水設備指定工事店指定申請書（新規・継続）","誓約書（規則第3条関連）","営業所の平面図及び付近見取図","専属責任技術者名簿","（辞退時）指定工事店指定辞退届","（異動時）指定工事店異動届"],
+      note: "下水道の排水設備工事を請け負うために必要な、会社としての指定登録です。" },
+    { name: "安芸太田町 建設工事入札参加資格", law: "安芸太田町建設工事執行規則等", office: "安芸太田町（契約担当課）",
+      docs: ["入札参加希望書","技術者の資格・工事経験調書","建設工事の施工実績","技術職員名簿","（変更時）入札参加資格審査申請書変更届","営業所一覧表","委任状（代理人を立てる場合）"],
+      note: "町発注の建設工事の入札に参加するための資格審査です。年度ごとの更新・変更届が必要です。" },
+  ];
+
+  let region = { orderType: '', pref: '', city: '' };
+  let templateRegistry = [];
+  let projects = [];
+  let editingProjectId = null;
+  let company = {};
+  let complianceState = {}; // { [projectId]: { [itemLabel]: bool } }
+
+  async function loadCustom(){
+    try {
+      const r = await storageHelper.get('knv_custom_rules');
+      customRules = r && r.value ? JSON.parse(r.value) : [];
+    } catch(e){ customRules = []; }
+    renderCustomList();
+  }
+  async function saveCustomRules(){
+    await storageHelper.set('knv_custom_rules', JSON.stringify(customRules));
+  }
+
+  async function loadRegion(){
+    try {
+      const r = await storageHelper.get('knv_region');
+      region = r && r.value ? JSON.parse(r.value) : { orderType: '', pref: '', city: '' };
+    } catch(e){ region = { orderType: '', pref: '', city: '' }; }
+    populateRegionSelects();
+    document.getElementById('orderType').value = region.orderType || '';
+    document.getElementById('regionPref').value = region.pref || '';
+    toggleCityInput();
+    if (document.getElementById('regionPref').value === '広島県'){
+      document.getElementById('regionCityHiroshima').value = region.city || '';
+    } else {
+      document.getElementById('regionCityOther').value = region.city || '';
+    }
+  }
+  async function saveRegion(){
+    toggleCityInput();
+    const isHiroshima = document.getElementById('regionPref').value === '広島県';
+    region = {
+      orderType: document.getElementById('orderType').value,
+      pref: document.getElementById('regionPref').value,
+      city: isHiroshima ? document.getElementById('regionCityHiroshima').value : document.getElementById('regionCityOther').value.trim(),
+    };
+    await storageHelper.set('knv_region', JSON.stringify(region));
+    if (lastResults.length) renderResults();
+  }
+  function regionLabel(){
+    return [region.pref, region.city].filter(Boolean).join(' ');
+  }
+  function orderTypeNote(){
+    if (!region.orderType) return '';
+    const map = {
+      "国": "国が発注者／国道等 → 提出先は国道事務所・地方整備局等の可能性",
+      "県": "県が発注者／県道等 → 提出先は県土木事務所等の可能性",
+      "市町村": "市町村が発注者 → 提出先は市町村担当課の可能性",
+      "組合等": "一部事務組合・公社等が関係機関",
+      "民間": "民間発注",
+    };
+    return map[region.orderType] || '';
+  }
+
+  async function loadProjects(){
+    try {
+      const r = await storageHelper.get('knv_projects');
+      projects = r && r.value ? JSON.parse(r.value) : [];
+    } catch(e){ projects = []; }
+    renderProjectForm();
+    renderProjectList();
+    populateBuilderProjects();
+  }
+  async function saveProjects(){
+    await storageHelper.set('knv_projects', JSON.stringify(projects));
+  }
+
+  const COMPANY_TO_PROJECT_DEFAULTS = {
+    contractorName: 'companyName',
+    contractorAddr: 'officeAddr',
+    contractorRep: 'repName',
+    contactTel: 'tel',
+  };
+  function renderProjectForm(){
+    const wrap = document.getElementById('projectForm');
+    wrap.innerHTML = '';
+    const editing = projects.find(p => p.id === editingProjectId);
+    SHARED_FIELDS.forEach(f => {
+      const div = document.createElement('div');
+      div.className = 'knv-field';
+      let val = editing ? (editing[f.key]||'') : '';
+      if (!editing && !val && COMPANY_TO_PROJECT_DEFAULTS[f.key]){
+        val = (company && company[COMPANY_TO_PROJECT_DEFAULTS[f.key]]) || '';
+      }
+      div.innerHTML = `<label>${f.label}</label><input type="${f.type||'text'}" id="pf_${f.key}" value="${val}">`;
+      wrap.appendChild(div);
     });
-    const data = await response.json();
-    const text = (data.content || []).map(c => c.text || '').join('');
-    return JSON.parse(text.replace(/```json|
+  }
+
+  function renderProjectList(){
+    const el = document.getElementById('projectList');
+    if (!projects.length){ el.innerHTML = '<div class="knv-empty">まだありません</div>'; return; }
+    el.innerHTML = '';
+    projects.forEach(p => {
+      const item = document.createElement('div');
+      item.className = 'knv-custom-item';
+      item.innerHTML = `<div><b>${p.siteName || '（現場名未設定）'}</b><br><span style="color:#8FA5B3;">${p.location||''}</span></div>`;
+      const btnWrap = document.createElement('div');
+      btnWrap.style.display = 'flex'; btnWrap.style.gap = '10px';
+      const edit = document.createElement('button');
+      edit.textContent = '編集'; edit.style.color = '#F2A93B';
+      edit.onclick = () => { editingProjectId = p.id; renderProjectForm(); document.querySelector('.knv-tab[data-tab="projects"]').click(); window.scrollTo(0,0); };
+      const del = document.createElement('button');
+      del.textContent = '削除';
+      del.onclick = async () => {
+        projects = projects.filter(x => x.id !== p.id);
+        await saveProjects();
+        renderProjectList();
+        populateBuilderProjects();
+      };
+      btnWrap.appendChild(edit); btnWrap.appendChild(del);
+      item.appendChild(btnWrap);
+      el.appendChild(item);
+    });
+  }
+
+  async function saveProjectForm(){
+    const data = { id: editingProjectId || ('p'+Date.now()) };
+    SHARED_FIELDS.forEach(f => { data[f.key] = document.getElementById('pf_'+f.key).value.trim(); });
+    if (!data.siteName){ alert('現場名を入力してください'); return; }
+    const idx = projects.findIndex(p => p.id === data.id);
+    if (idx >= 0) projects[idx] = data; else projects.push(data);
+    editingProjectId = null;
+    await saveProjects();
+    renderProjectForm();
+    renderProjectList();
+    populateBuilderProjects();
+  }
+
+  async function loadTemplateRegistry(){
+    try {
+      const r = await storageHelper.get('knv_template_registry');
+      templateRegistry = r && r.value ? JSON.parse(r.value) : [];
+    } catch(e){ templateRegistry = []; }
+    renderTemplateRegistry();
+  }
+  async function saveTemplateRegistry(){
+    await storageHelper.set('knv_template_registry', JSON.stringify(templateRegistry));
+  }
+  function findRegistered(query){
+    const q = query.toLowerCase();
+    return templateRegistry.find(t => (t.docType||'form') === 'form' && (q.includes(t.name.toLowerCase()) || t.name.toLowerCase().includes(q)));
+  }
+  function normalizeDocName(s){
+    return (s||'').replace(/[（(].*?[）)]/g, '').trim().toLowerCase();
+  }
+  function findTemplateForDocName(docName){
+    const dn = normalizeDocName(docName);
+    if (!dn) return null;
+    let bestIdx = -1;
+    templateRegistry.forEach((t, i) => {
+      if ((t.docType||'form') !== 'form') return;
+      const tn = normalizeDocName(t.name);
+      if (tn && (dn.includes(tn) || tn.includes(dn))) bestIdx = i;
+    });
+    return bestIdx;
+  }
+  function findManualsForRule(rule){
+    const keys = [normalizeDocName(rule.name)].concat((rule.docs||[]).map(normalizeDocName)).filter(Boolean);
+    const idxs = [];
+    templateRegistry.forEach((t, i) => {
+      if ((t.docType||'form') !== 'manual') return;
+      const tn = normalizeDocName(t.name);
+      if (!tn) return;
+      if (keys.some(k => k.includes(tn) || tn.includes(k))) idxs.push(i);
+    });
+    return idxs;
+  }
+  function renderTemplateRegistry(){
+    const el = document.getElementById('templateRegistry');
+    if (!templateRegistry.length){ el.innerHTML = '<div class="knv-empty">まだありません</div>'; return; }
+    el.innerHTML = '';
+    const renderGroup = (title, items) => {
+      if (!items.length) return;
+      const h = document.createElement('div');
+      h.className = 'knv-sub';
+      h.style.margin = '10px 0 4px';
+      h.innerHTML = '<b>' + title + '（' + items.length + '件）</b>';
+      el.appendChild(h);
+      items.forEach(({t, i}) => {
+        const item = document.createElement('div');
+        item.className = 'knv-custom-item';
+        item.style.flexWrap = 'wrap';
+        const fileBadge = t.fileData ? '<span class="knv-badge" style="margin-left:6px;">ファイル添付</span>' : '';
+        const reviewBadge = t.needsReview ? '<span class="knv-badge" style="margin-left:6px;background:var(--red);">要確認</span>' : '';
+        item.innerHTML = `<div><b>${t.name}</b>${fileBadge}${reviewBadge}<br><span style="color:#8FA5B3;">${t.url ? t.url : '(URLなし)'}</span>${t.notes ? '<br><span style="color:#8FA5B3;font-size:11.5px;white-space:pre-wrap;">'+t.notes+'</span>' : ''}</div>`;
+        const btnWrap = document.createElement('div');
+        btnWrap.style.display = 'flex'; btnWrap.style.gap = '10px'; btnWrap.style.alignItems = 'center';
+        const typeSel = document.createElement('select');
+        typeSel.style.fontSize = '11px';
+        typeSel.innerHTML = '<option value="form">様式</option><option value="manual">マニュアル</option>';
+        typeSel.value = t.docType || 'form';
+        typeSel.onchange = async () => {
+          templateRegistry[i].docType = typeSel.value;
+          templateRegistry[i].needsReview = false;
+          await saveTemplateRegistry();
+          renderTemplateRegistry();
+        };
+        btnWrap.appendChild(typeSel);
+        if (t.fileData){
+          const dl = document.createElement('a');
+          dl.textContent = 'ダウンロード';
+          dl.style.color = '#4FB286';
+          dl.style.fontSize = '11px';
+          dl.style.cursor = 'pointer';
+          dl.onclick = (e) => {
+            e.preventDefault();
+            const link = document.createElement('a');
+            link.href = 'data:' + (t.fileType||'application/octet-stream') + ';base64,' + t.fileData;
+            link.download = t.fileName || (t.name + '.dat');
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+          };
+          btnWrap.appendChild(dl);
+        }
+        const del = document.createElement('button');
+        del.textContent = '削除';
+        del.onclick = async () => {
+          templateRegistry.splice(i,1);
+          await saveTemplateRegistry();
+          renderTemplateRegistry();
+        };
+        btnWrap.appendChild(del);
+        item.appendChild(btnWrap);
+        el.appendChild(item);
+      });
+    };
+    const indexed = templateRegistry.map((t, i) => ({t, i}));
+    renderGroup('様式', indexed.filter(x => (x.t.docType||'form') === 'form'));
+    renderGroup('マニュアル・手引き', indexed.filter(x => x.t.docType === 'manual'));
+  }
+
+  function allRules(){ return BASE_RULES.concat(customRules); }
+
+  function renderTags(){
+    const grid = document.getElementById('tagGrid');
+    grid.innerHTML = '';
+    const customTagSet = new Set();
+    customRules.forEach(r => (r.tags||[]).forEach(t => customTagSet.add(t)));
+    const allTags = TAGS.concat([...customTagSet].filter(t => !TAGS.includes(t)));
+    allTags.forEach(tag => {
+      const b = document.createElement('button');
+      b.className = 'knv-tag' + (selectedTags.has(tag) ? ' selected' : '');
+      b.textContent = tag;
+      b.onclick = () => { 
+        if (selectedTags.has(tag)) selectedTags.delete(tag); else selectedTags.add(tag);
+        renderTags();
+      };
+      grid.appendChild(b);
+    });
+    renderFollowups();
+  }
+
+  function renderFollowups(){
+    const wrap = document.getElementById('followupWrap');
+    wrap.innerHTML = '';
+    injectedTags = new Set();
+    [...selectedTags].forEach(tag => {
+      const qs = FOLLOWUPS[tag];
+      if (!qs) return;
+      qs.forEach((fq, qi) => {
+        const key = tag + '::' + qi;
+        const card = document.createElement('div');
+        card.className = 'knv-card';
+        card.style.background = 'var(--panel2)';
+        let optsHtml = fq.options.map((o, oi) => {
+          const active = followupAnswers[key] === oi;
+          return `<button class="knv-tag${active?' selected':''}" data-key="${key}" data-oi="${oi}" style="margin-bottom:6px;display:block;width:100%;text-align:left;">${o.label}</button>`;
+        }).join('');
+        card.innerHTML = `<div class="knv-card-title" style="font-size:13px;">${fq.q}</div>${optsHtml}`;
+        wrap.appendChild(card);
+        if (followupAnswers[key] !== undefined){
+          (fq.options[followupAnswers[key]].add||[]).forEach(t => injectedTags.add(t));
+        }
+      });
+    });
+    wrap.querySelectorAll('button[data-key]').forEach(btn => {
+      btn.onclick = () => {
+        followupAnswers[btn.dataset.key] = parseInt(btn.dataset.oi, 10);
+        renderFollowups();
+      };
+    });
+  }
+
+  function runMatch(){
+    const effective = new Set([...selectedTags, ...injectedTags]);
+    const results = allRules().filter(r => (r.tags||[]).some(t => effective.has(t)));
+    lastResults = results;
+    renderResults();
+    document.querySelector('.knv-tab[data-tab="results"]').click();
+  }
+
+  function renderResults(){
+    const wrap = document.getElementById('resultsWrap');
+    if (!lastResults.length){
+      wrap.innerHTML = '<div class="knv-empty">該当する候補が見つかりませんでした。条件の選び方を見直すか、「知識を追加」タブから登録してください。</div>';
+      return;
+    }
+    wrap.innerHTML = '';
+    const summary = document.createElement('div');
+    summary.className = 'knv-note';
+    const rl = regionLabel();
+    const otn = orderTypeNote();
+    summary.innerHTML = '<b>候補 ' + lastResults.length + ' 件</b>' + (rl ? ' 対象地域：<b>'+rl+'</b>' : ' 地域未設定（判定タブで施工場所を選ぶと絞り込みやすくなります）') + (otn ? '<br>'+otn : '') + '<br>※すべて要確認です。担当窓口・道路管理区分（国道／県道／町道／私道）により要否が変わる場合があります。';
+    wrap.appendChild(summary);
+
+    lastResults.forEach(r => {
+      const el = document.createElement('div');
+      el.className = 'knv-result';
+      const officeText = rl ? r.office + '（' + rl + '）' : r.office;
+      const docListHtml = (r.docs||[]).map((d, di) => {
+        const idx = findTemplateForDocName(d);
+        if (idx >= 0){
+          return `<li>${d} <a href="#" class="knv-doc-dl" data-idx="${idx}" style="color:#4FB286;font-size:11px;">［登録済み・ダウンロード］</a></li>`;
+        }
+        return `<li>${d} <a href="#" class="knv-doc-find" data-doc="${d.replace(/"/g,'&quot;')}" style="color:#8FA5B3;font-size:11px;">［様式を探す／登録する］</a></li>`;
+      }).join('');
+      const manualIdxs = findManualsForRule(r);
+      const manualHtml = manualIdxs.length
+        ? '<div class="knv-result-row"><b>参考：関連する記入マニュアル・手引き</b></div><ul class="knv-doclist">' +
+          manualIdxs.map(mi => `<li>${templateRegistry[mi].name} <a href="#" class="knv-manual-open" data-idx="${mi}" style="color:#4FB286;font-size:11px;">［開く］</a></li>`).join('') +
+          '</ul>'
+        : '';
+      el.innerHTML = `
+        <div class="knv-result-top">
+          <div class="knv-result-name">${r.name}</div>
+          <div class="knv-badge">要確認</div>
+        </div>
+        <div class="knv-result-row"><b>法的根拠：</b>${r.law}</div>
+        <div class="knv-result-row"><b>提出先：</b>${officeText}</div>
+        <div class="knv-result-row"><b>必要書類：</b></div>
+        <ul class="knv-doclist">${docListHtml}</ul>
+        ${manualHtml}
+        ${r.note ? '<div class="knv-result-row">'+r.note+'</div>' : ''}
+        ${r.renew ? '<div class="knv-result-row" style="color:#F2A93B;">⟳ 期間更新の可能性あり &mdash;「更新期限」タブで工期から計算できます</div>' : ''}
+        <div class="knv-check-row">
+          <input type="checkbox" data-id="${r.id}"><span>担当窓口に確認済み</span>
+        </div>
+        <div class="knv-btn-row"><button class="knv-btn knv-btn-ghost knv-find-template" data-name="${r.name}" data-law="${r.law}">この様式を探す →</button></div>
+      `;
+      wrap.appendChild(el);
+    });
+    wrap.querySelectorAll('.knv-manual-open').forEach(a => {
+      a.onclick = (e) => {
+        e.preventDefault();
+        const t = templateRegistry[parseInt(a.dataset.idx, 10)];
+        if (!t) return;
+        if (t.fileData){
+          const link = document.createElement('a');
+          link.href = 'data:' + (t.fileType||'application/octet-stream') + ';base64,' + t.fileData;
+          link.download = t.fileName || (t.name + '.dat');
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+        } else if (t.url){
+          window.open(t.url, '_blank');
+        } else if (t.notes){
+          alert(t.name + '\n\n' + t.notes);
+        }
+      };
+    });
+    wrap.querySelectorAll('.knv-doc-dl').forEach(a => {
+      a.onclick = (e) => {
+        e.preventDefault();
+        const t = templateRegistry[parseInt(a.dataset.idx, 10)];
+        if (!t) return;
+        if (t.fileData){
+          const link = document.createElement('a');
+          link.href = 'data:' + (t.fileType||'application/octet-stream') + ';base64,' + t.fileData;
+          link.download = t.fileName || (t.name + '.dat');
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+        } else if (t.url){
+          window.open(t.url, '_blank');
+        }
+      };
+    });
+    wrap.querySelectorAll('.knv-doc-find').forEach(a => {
+      a.onclick = (e) => {
+        e.preventDefault();
+        const q = [regionLabel(), a.dataset.doc].filter(Boolean).join(' ');
+        document.getElementById('templateQuery').value = q;
+        document.querySelector('.knv-tab[data-tab="template"]').click();
+        runTemplateSearch();
+      };
+    });
+    wrap.querySelectorAll('.knv-find-template').forEach(btn => {
+      btn.onclick = () => {
+        const q = [regionLabel(), btn.dataset.name, btn.dataset.law].filter(Boolean).join(' ');
+        document.getElementById('templateQuery').value = q;
+        document.querySelector('.knv-tab[data-tab="template"]').click();
+        runTemplateSearch();
+      };
+    });
+  }
+
+  function calcRenew(){
+    const start = document.getElementById('periodStart').value;
+    const end = document.getElementById('periodEnd').value;
+    const wrap = document.getElementById('renewWrap');
+    if (!start || !end){ wrap.innerHTML = '<div class="knv-empty">工期の開始日・終了日を入力してください。</div>'; return; }
+    const renewables = lastResults.filter(r => r.renew);
+    if (!renewables.length){
+      wrap.innerHTML = '<div class="knv-empty">「結果一覧」に更新対象の候補がありません。先に判定を行ってください。</div>';
+      return;
+    }
+    const s = new Date(start), e = new Date(end);
+    wrap.innerHTML = '';
+    renewables.forEach(r => {
+      const cycleDays = r.name.includes('占用') ? 30 : 15;
+      const card = document.createElement('div');
+      card.className = 'knv-card';
+      let html = '<div class="knv-card-title">' + r.name + ' の更新目安</div>';
+      let cur = new Date(s);
+      let count = 0;
+      const today = new Date();
+      while (cur < e && count < 30){
+        const next = new Date(cur); next.setDate(next.getDate() + cycleDays);
+        const label = next > e ? e : next;
+        const overdue = label < today;
+        html += `<div class="knv-remind ${overdue?'overdue':''}"><span class="knv-remind-date">${fmt(cur)} 〜 ${fmt(label)}</span> の期間分の申請${overdue?'（期限超過の可能性）':''}</div>`;
+        cur = new Date(next);
+        count++;
+      }
+      html += '<div class="knv-note">目安計算です（道路使用＝15日、占用＝30日周期を仮定）。実際の許可単位・様式は窓口の運用に従ってください。</div>';
+      card.innerHTML = html;
+      wrap.appendChild(card);
+    });
+  }
+  function fmt(d){ return d.getFullYear()+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+String(d.getDate()).padStart(2,'0'); }
+
+  function renderCustomList(){
+    const el = document.getElementById('customList');
+    if (!customRules.length){ el.innerHTML = '<div class="knv-empty">まだありません</div>'; return; }
+    el.innerHTML = '';
+    customRules.forEach((r,i) => {
+      const item = document.createElement('div');
+      item.className = 'knv-custom-item';
+      item.innerHTML = `<div><b>${r.name}</b><br><span style="color:#8FA5B3;">${r.office}</span></div><button data-i="${i}">削除</button>`;
+      item.querySelector('button').onclick = async () => {
+        customRules.splice(i,1);
+        await saveCustomRules();
+        renderCustomList();
+        renderTags();
+      };
+      el.appendChild(item);
+    });
+  }
+
+  async function saveCustom(){
+    const name = document.getElementById('cName').value.trim();
+    if (!name){ alert('手続き名を入力してください'); return; }
+    const rule = {
+      id: 'c' + Date.now(),
+      name,
+      law: document.getElementById('cLaw').value.trim(),
+      office: document.getElementById('cOffice').value.trim(),
+      docs: document.getElementById('cDocs').value.split('\n').map(s=>s.trim()).filter(Boolean),
+      tags: document.getElementById('cTags').value.split('\n').map(s=>s.trim()).filter(Boolean),
+      renew: document.getElementById('cRenew').value === 'yes',
+      note: document.getElementById('cMemo').value.trim(),
+    };
+    customRules.push(rule);
+    await saveCustomRules();
+    ['cName','cLaw','cOffice','cDocs','cTags','cMemo'].forEach(id => document.getElementById(id).value = '');
+    document.getElementById('cRenew').value = 'no';
+    renderCustomList();
+    renderTags();
+  }
+
+  document.querySelectorAll('.knv-tab').forEach(tab => {
+    tab.onclick = () => {
+      document.querySelectorAll('.knv-tab').forEach(t=>t.classList.remove('active'));
+      document.querySelectorAll('.knv-panel').forEach(p=>p.classList.remove('active'));
+      tab.classList.add('active');
+      document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
+      if (tab.dataset.tab === 'builder') populateBuilderRules();
+    };
+  });
+
+  document.getElementById('runMatch').onclick = runMatch;
+  document.getElementById('clearTags').onclick = () => { selectedTags.clear(); followupAnswers = {}; renderTags(); };
+  document.getElementById('calcRenew').onclick = calcRenew;
+  document.getElementById('saveCustom').onclick = saveCustom;
+
+  // --- 資料からの自動抽出 ---
+  function fileToBase64(file){
+    return new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(r.result.split(',')[1]);
+      r.onerror = () => rej(new Error('読み込み失敗'));
+      r.readAsDataURL(file);
+    });
+  }
+
+  async function runExtract(){
+    const status = document.getElementById('extractStatus');
+    status.innerHTML = '<span style="color:var(--red);">⚠️ <b>自動入力はご利用いただけません</b></span><br>GitHub Pages上のセキュリティ（CORS）およびAPIの制限により、ファイルの直接解析は実行できません。お手数ですが、下のフォームへ直接手入力を行ってください。（手動での保存・判定機能は100%正常に動作します）';
+  }
+  document.getElementById('runExtract').onclick = runExtract;
+
+  // --- 様式・公式ソース検索 ---
+  async function runTemplateSearch(){
+    const q = document.getElementById('templateQuery').value.trim();
+    const status = document.getElementById('templateStatus');
+    const wrap = document.getElementById('templateResult');
+    if (!q){ status.textContent = '書類名を入力してください。'; return; }
+
+    const registered = findRegistered(q);
+    if (registered){
+      status.textContent = '登録済みの様式が見つかりました（再検索する場合は下のボタンから）。';
+      wrap.innerHTML = '';
+      const card = document.createElement('div');
+      card.className = 'knv-card';
+      card.innerHTML = `<div class="knv-card-title">登録済み：${registered.name}</div>
+        <div class="knv-result-row"><b>URL：</b>${registered.url || '(未登録)'}</div>
+        <div class="knv-result-row" style="white-space:pre-wrap;">${registered.notes || ''}</div>`;
+      wrap.appendChild(card);
+      return;
+    }
+    
+    status.innerHTML = '<span style="color:var(--red);">⚠️ <b>自動検索機能は制限されています</b></span><br>セキュリティ制限により、この公開ページから直接外部のAI検索をかけることができません。実物のテンプレートファイルをダウンロードし、手動で「様式を手動で登録」から登録してください。';
+  }
+  document.getElementById('runTemplateSearch').onclick = runTemplateSearch;
+
+  document.getElementById('bulkRegister').onclick = async () => {
+    const fileInput = document.getElementById('bulkFiles');
+    const status = document.getElementById('bulkStatus');
+    if (!fileInput.files.length){ status.textContent = 'ファイルを選択してください。'; return; }
+    const files = Array.from(fileInput.files);
+    let ok = 0, skipped = 0;
+    
+    for (let i = 0; i < files.length; i++){
+      const file = files[i];
+      try {
+        const hash = await computeFileHash(file);
+        if (findDuplicateTemplate(hash, file) >= 0){
+          continue;
+        }
+        const base64 = await fileToBase64(file);
+        const entry = {
+          id: 't' + Date.now() + '_' + i,
+          url: '',
+          fileData: base64,
+          fileName: file.name,
+          fileSize: file.size,
+          contentHash: hash,
+          fileType: file.type || 'application/octet-stream',
+          name: guessTemplateName(file.name),
+          docType: guessDocType(file.name, file.name),
+          notes: '手動登録（元ファイル名：' + file.name + '）'
+        };
+        templateRegistry.push(entry);
+        ok++;
+      } catch(e){ skipped++; }
+    }
+    await saveTemplateRegistry();
+    renderTemplateRegistry();
+    status.textContent = ok + '件のファイルをローカルに登録しました。';
+    fileInput.value = '';
+  };
+
+  document.getElementById('mtSave').onclick = async () => {
+    const name = document.getElementById('mtName').value.trim();
+    const status = document.getElementById('mtStatus');
+    if (!name){ alert('書類名を入力してください'); return; }
+    const fileInput = document.getElementById('mtFile');
+    const entry = {
+      id: 't'+Date.now(), name,
+      docType: document.getElementById('mtType').value || 'form',
+      url: document.getElementById('mtUrl').value.trim(),
+      notes: document.getElementById('mtNotes').value.trim(),
+    };
+    if (fileInput.files.length){
+      const file = fileInput.files[0];
+      if (file.size > 4.5 * 1024 * 1024){
+        status.textContent = 'ファイルが大きすぎます（4.5MB以下にしてください）。URL・メモのみ登録します。';
+      } else {
+        const hash = await computeFileHash(file);
+        try {
+          entry.fileData = await fileToBase64(file);
+          entry.fileName = file.name;
+          entry.fileSize = file.size;
+          entry.contentHash = hash;
+          entry.fileType = file.type || 'application/octet-stream';
+        } catch(e) {
+          status.textContent = 'ファイルの読み込みに失敗しました。';
+        }
+      }
+    }
+    templateRegistry.push(entry);
+    await saveTemplateRegistry();
+    ['mtName','mtUrl','mtNotes'].forEach(id => document.getElementById(id).value = '');
+    fileInput.value = '';
+    status.textContent = '登録完了しました。';
+    renderTemplateRegistry();
+  };
+
+  document.getElementById('mtSummarize').onclick = async () => {
+    const status = document.getElementById('mtStatus');
+    status.innerHTML = '<span style="color:var(--red);">⚠️ <b>自動要約はご利用いただけません</b></span><br>セキュリティ制限のため、AI自動要約は動作しません。必要事項は手動でメモ欄に入力して登録してください。';
+  };
+
+  document.getElementById('orderType').addEventListener('change', saveRegion);
+  document.getElementById('regionPref').addEventListener('change', saveRegion);
+  document.getElementById('regionCityHiroshima').addEventListener('change', saveRegion);
+  document.getElementById('regionCityOther').addEventListener('change', saveRegion);
+
+  // --- 書類作成（ビルダー） ---
+  function populateBuilderRules(){
+    const sel = document.getElementById('builderRule');
+    const source = lastResults.length ? lastResults : allRules();
+    sel.innerHTML = source.map(r => `<option value="${r.id}">${r.name}</option>`).join('');
+    renderBuilderExtraFields();
+  }
+  function populateBuilderProjects(){
+    const sel = document.getElementById('builderProject');
+    sel.innerHTML = '<option value="">選択してください</option>' + projects.map(p => `<option value="${p.id}">${p.siteName}</option>`).join('');
+    renderBuilderSharedPreview();
+    populateComplianceProjects();
+  }
+  function currentBuilderRule(){
+    const id = document.getElementById('builderRule').value;
+    return allRules().find(r => r.id === id);
+  }
+  function renderBuilderSharedPreview(){
+    const wrap = document.getElementById('builderSharedPreview');
+    const pid = document.getElementById('builderProject').value;
+    const p = projects.find(x => x.id === pid);
+    if (!p){ wrap.innerHTML = ''; return; }
+    wrap.innerHTML = '<div class="knv-card" style="background:var(--panel2);"><div class="knv-card-title" style="font-size:12.5px;">現場から自動で入る共通項目</div>' +
+      SHARED_FIELDS.map(f => `<div class="knv-result-row"><b>${f.label}：</b>${p[f.key]||'（未入力）'}</div>`).join('') + '</div>';
+  }
+  function renderBuilderExtraFields(){
+    const wrap = document.getElementById('builderExtraFields');
+    const rule = currentBuilderRule();
+    wrap.innerHTML = '';
+    if (!rule) return;
+    const fields = rule.extraFields && rule.extraFields.length ? rule.extraFields : ['備考・特記事項'];
+    const card = document.createElement('div');
+    card.className = 'knv-card';
+    card.innerHTML = '<div class="knv-card-title" style="font-size:12.5px;">この書類だけに必要な項目</div>';
+    fields.forEach((label, i) => {
+      const div = document.createElement('div');
+      div.className = 'knv-field';
+      div.innerHTML = `<label>${label}</label><textarea id="ef_${i}" rows="2"></textarea>`;
+      card.appendChild(div);
+    });
+    wrap.appendChild(card);
+  }
+
+  function buildDocOutput(){
+    const rule = currentBuilderRule();
+    const pid = document.getElementById('builderProject').value;
+    const p = projects.find(x => x.id === pid);
+    const wrap = document.getElementById('builderOutput');
+    if (!rule){ wrap.innerHTML = '<div class="knv-empty">書類を選択してください。</div>'; return; }
+    if (!p){ wrap.innerHTML = '<div class="knv-empty">現場を選択してください（未登録なら「現場情報」タブで先に登録してください）。</div>'; return; }
+    const fields = rule.extraFields && rule.extraFields.length ? rule.extraFields : ['備考・特記事項'];
+    let lines = [];
+    lines.push('【作成書類】' + rule.name + '（' + rule.law + '）');
+    lines.push('【提出先】' + rule.office);
+    lines.push('');
+    lines.push('■ 現場共通情報（' + (p.siteName||'') + '）');
+    SHARED_FIELDS.forEach(f => lines.push('・' + f.label + '：' + (p[f.key]||'')));
+    lines.push('');
+    lines.push('■ 会社情報（「会社情報」タブに登録した内容が自動で入ります）');
+    COMPANY_FIELDS.forEach(f => lines.push('・' + f.label + '：' + ((company && company[f.key]) || '')));
+    lines.push('');
+    lines.push('■ この書類固有の情報');
+    fields.forEach((label, i) => {
+      const v = document.getElementById('ef_'+i).value.trim();
+      lines.push('・' + label + '：' + v);
+    });
+    lines.push('');
+    lines.push('■ 必要書類（想定）');
+    (rule.docs||[]).forEach(d => lines.push('・' + d));
+    const text = lines.join('\n');
+    wrap.innerHTML = '';
+    const card = document.createElement('div');
+    card.className = 'knv-card';
+    card.innerHTML = '<div class="knv-card-title">完成データ</div><textarea readonly style="min-height:220px;white-space:pre-wrap;">' + text + '</textarea>';
+    wrap.appendChild(card);
+    const note = document.createElement('div');
+    note.className = 'knv-note';
+    note.innerHTML = '<b>次のステップ</b>：このテキストをコピーして、実物の様式ファイルと一緒にチャットに貼り付ければ、実際の書類に転記します。';
+    wrap.appendChild(note);
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'knv-btn knv-btn-primary';
+    copyBtn.textContent = 'コピーする';
+    copyBtn.onclick = () => {
+      navigator.clipboard.writeText(text).then(() => { copyBtn.textContent = 'コピーしました'; });
+    };
+    wrap.appendChild(copyBtn);
+  }
+
+  async function loadCompany(){
+    try {
+      const r = await storageHelper.get('knv_company');
+      company = r && r.value ? JSON.parse(r.value) : null;
+    } catch(e){ company = null; }
+    if (!company || Object.keys(company).length === 0){
+      company = Object.assign({}, DEFAULT_COMPANY);
+    }
+    renderCompanyForm();
+    renderCompanyCatalog();
+  }
+  async function saveCompanyForm(){
+    COMPANY_FIELDS.forEach(f => { company[f.key] = document.getElementById('cf_'+f.key).value.trim(); });
+    await storageHelper.set('knv_company', JSON.stringify(company));
+    alert('会社情報を保存しました。');
+  }
+  async function resetCompanyToDefault(){
+    if (!confirm('会社情報を初期値（デフォルト）に戻します。よろしいですか？')) return;
+    company = Object.assign({}, DEFAULT_COMPANY);
+    await storageHelper.set('knv_company', JSON.stringify(company));
+    renderCompanyForm();
+    alert('初期値に戻しました。');
+  }
+  function renderCompanyForm(){
+    const wrap = document.getElementById('companyForm');
+    wrap.innerHTML = '<div class="knv-card-title">会社情報を登録</div>';
+    COMPANY_FIELDS.forEach(f => {
+      const div = document.createElement('div');
+      div.className = 'knv-field';
+      const val = company[f.key] || '';
+      if (f.type === 'textarea'){
+        div.innerHTML = `<label>${f.label}</label><textarea id="cf_${f.key}">${val}</textarea>`;
+      } else {
+        div.innerHTML = `<label>${f.label}</label><input type="text" id="cf_${f.key}" value="${val}">`;
+      }
+      wrap.appendChild(div);
+    });
+  }
+  function renderCompanyCatalog(){
+    const wrap = document.getElementById('companyCatalog');
+    wrap.innerHTML = '';
+    QUALIFICATION_CATALOG.forEach(q => {
+      const el = document.createElement('div');
+      el.className = 'knv-result';
+      el.innerHTML = `
+        <div class="knv-result-top"><div class="knv-result-name">${q.name}</div></div>
+        <div class="knv-result-row"><b>根拠：</b>${q.law}</div>
+        <div class="knv-result-row"><b>窓口：</b>${q.office}</div>
+        <div class="knv-result-row"><b>関連書類：</b></div>
+        <ul class="knv-doclist">${q.docs.map(d=>'<li>'+d+'</li>').join('')}</ul>
+        <div class="knv-result-row">${q.note}</div>
+      `;
+      wrap.appendChild(el);
+    });
+  }
+
+  async function runCompanyExtract(){
+    const status = document.getElementById('companyExtractStatus');
+    status.innerHTML = '<span style="color:var(--red);">⚠️ <b>自動入力はご利用いただけません</b></span><br>セキュリティ制限のため自動読み取りは動作しません。上のフォームへ手動で情報を入力し、保存を行ってください。';
+  }
+  async function loadCompliance(){
+    try {
+      const r = await storageHelper.get('knv_compliance');
+      complianceState = r && r.value ? JSON.parse(r.value) : {};
+    } catch(e){ complianceState = {}; }
+  }
+  async function saveCompliance(){
+    await storageHelper.set('knv_compliance', JSON.stringify(complianceState));
+  }
+  function populateComplianceProjects(){
+    const sel = document.getElementById('complianceProject');
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">選択してください</option>' + projects.map(p => `<option value="${p.id}">${p.siteName}</option>`).join('');
+    if (prev) sel.value = prev;
+    renderCompliance();
+  }
+  function renderCompliance(){
+    const wrap = document.getElementById('complianceWrap');
+    const pid = document.getElementById('complianceProject').value;
+    if (!pid){ wrap.innerHTML = '<div class="knv-empty">現場を選択してください（未登録なら「現場情報」タブで先に登録してください）。</div>'; return; }
+    if (!complianceState[pid]) complianceState[pid] = {};
+    const state = complianceState[pid];
+    wrap.innerHTML = '';
+    let total = 0, done = 0;
+    COMPLIANCE_PHASES.forEach(ph => ph.items.forEach(() => total++));
+    COMPLIANCE_PHASES.forEach(ph => {
+      const card = document.createElement('div');
+      card.className = 'knv-card';
+      card.innerHTML = '<div class="knv-card-title">' + ph.phase + '</div>';
+      ph.items.forEach(item => {
+        const checked = !!state[item];
+        if (checked) done++;
+        const row = document.createElement('div');
+        row.className = 'knv-check-row' + (checked ? ' done' : '');
+        row.innerHTML = `<input type="checkbox" ${checked?'checked':''} data-item="${item}"><span>${item}</span>`;
+        row.querySelector('input').onchange = async (e) => {
+          state[item] = e.target.checked;
+          await saveCompliance();
+          renderCompliance();
+        };
+        card.appendChild(row);
+      });
+      wrap.appendChild(card);
+    });
+    const summary = document.createElement('div');
+    summary.className = 'knv-note';
+    summary.innerHTML = '<b>進捗：' + done + ' / ' + total + '</b> ※すべての現場に全項目が当てはまるわけではありません。該当しない項目はチェック不要です。';
+    wrap.insertBefore(summary, wrap.firstChild);
+  }
+  document.getElementById('complianceProject').addEventListener('change', renderCompliance);
+  document.getElementById('runCompanyExtract').onclick = runCompanyExtract;
+  document.getElementById('saveCompany').onclick = saveCompanyForm;
+  document.getElementById('saveProject').onclick = saveProjectForm;
+  document.getElementById('resetCompany').onclick = resetCompanyToDefault;
+  document.getElementById('builderRule').addEventListener('change', renderBuilderExtraFields);
+  document.getElementById('builderProject').addEventListener('change', renderBuilderSharedPreview);
+  document.getElementById('buildDoc').onclick = buildDocOutput;
+
+  renderTags();
+  loadCustom();
+  loadRegion();
+  loadTemplateRegistry();
+  (async () => {
+    await loadCompany();
+    await loadCompliance();
+    await loadProjects();
+  })();
+})();
+</script>
