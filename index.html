@@ -226,6 +226,18 @@
 .knv-custom-item button {
   background: none; border: none; color: var(--red); font-size: 11px; cursor: pointer;
 }
+.knv-custom-item input[type="text"] {
+  color: var(--ink);
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-family: var(--sans);
+}
+.knv-custom-item input[type="text"]:focus {
+  outline: none;
+  border-color: var(--amber);
+}
 </style>
 
 <div class="knv-root" id="knvRoot">
@@ -1450,10 +1462,10 @@
         const nameInput = document.createElement('input');
         nameInput.type = 'text';
         nameInput.value = t.name;
-        nameInput.style.cssText = 'font-weight:700;font-size:13px;background:transparent;border:1px solid transparent;border-radius:4px;padding:2px 4px;width:100%;margin-bottom:2px;';
-        nameInput.onfocus = () => { nameInput.style.background = 'var(--panel)'; nameInput.style.borderColor = 'var(--line)'; };
+        nameInput.style.cssText = 'font-weight:700;font-size:13px;color:var(--ink);background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:3px 6px;width:100%;margin-bottom:2px;';
+        nameInput.onfocus = () => { nameInput.style.borderColor = 'var(--amber)'; };
         nameInput.onblur = async () => {
-          nameInput.style.background = 'transparent'; nameInput.style.borderColor = 'transparent';
+          nameInput.style.borderColor = 'var(--line)';
           const v = nameInput.value.trim();
           if (v && v !== t.name){
             templateRegistry[i].name = v;
