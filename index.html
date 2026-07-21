@@ -434,10 +434,11 @@
     <div id="templateResult"></div>
     <div class="knv-card">
       <div class="knv-card-title">複数ファイルをまとめて登録</div>
-      <div class="knv-sub" style="margin-bottom:10px;">ファイル名が数字だけでも大丈夫です。AIが中身を読んで正式な書類名を判定し、「様式」か「マニュアル・手引き」かも自動で振り分けます（PDF・画像・Word(.docx)・Excel(.xlsx/.xls)対応）。古い形式の.docファイルなど、この環境から中身を読み取れないものだけ「要確認」を付けて登録するので、あとで見るのはそこだけで済みます。</div>
+      <div class="knv-sub" style="margin-bottom:10px;">ファイル名が数字だけでも大丈夫です。AIが中身を読んで正式な書類名を判定し、「様式」か「マニュアル・手引き」かも自動で振り分けます（PDF・画像・Word(.docx)・Excel(.xlsx/.xls)対応）。古い形式の.docファイルなど、この環境から中身を読み取れないものだけ「要確認」を付けて登録するので、あとで見るのはそこだけで済みます。1ファイル4.5MBまでという制限があります（ブラウザの保存領域には全部合わせて数MB程度しか入らないため。大きいPDF・写真の多いファイルは超えることがあります）。登録できなかったファイルは、ボタンを押した後にファイル名と理由が一覧で表示されます。</div>
       <div class="knv-field"><label>ファイルを複数選択</label><input type="file" id="bulkFiles" multiple accept=".doc,.docx,.xls,.xlsx,.pdf"></div>
       <div class="knv-btn-row"><button class="knv-btn knv-btn-primary" id="bulkRegister">まとめて登録する</button></div>
       <div id="bulkStatus" class="knv-sub" style="margin-top:8px;"></div>
+      <div id="bulkDetail"></div>
     </div>
     <div class="knv-card">
       <div class="knv-card-title">様式・マニュアルを手動で登録</div>
@@ -1328,9 +1329,23 @@
     const n = (docName||'');
     return ATTACHMENT_ONLY_KEYWORDS.some(k => n.includes(k));
   }
+  let docLinkOverrides = {}; // 正規化した書類名 -> templateRegistryのid（名前が一致しなくても確実に紐づける）
+  async function loadDocLinkOverrides(){
+    try {
+      const r = await storage.get('knv_doc_links');
+      docLinkOverrides = r && r.value ? JSON.parse(r.value) : {};
+    } catch(e){ docLinkOverrides = {}; }
+  }
+  async function saveDocLinkOverrides(){
+    await storage.set('knv_doc_links', JSON.stringify(docLinkOverrides));
+  }
   function findTemplateForDocName(docName){
     const dn = normalizeDocName(docName);
     if (!dn) return null;
+    if (docLinkOverrides[dn]){
+      const idx = templateRegistry.findIndex(t => t.id === docLinkOverrides[dn]);
+      if (idx >= 0) return idx;
+    }
     let bestIdx = -1;
     templateRegistry.forEach((t, i) => {
       if ((t.docType||'form') !== 'form') return;
@@ -1704,10 +1719,10 @@
           const idx = findTemplateForDocName(d);
           if (idx >= 0){
             status = 'registered';
-            html = `<li>${d} <a href="#" class="knv-doc-dl" data-idx="${idx}" style="color:#4FB286;font-size:11px;">［登録済み・ダウンロード］</a></li>`;
+            html = `<li>${d} <a href="#" class="knv-doc-dl" data-idx="${idx}" style="color:#4FB286;font-size:11px;">［登録済み・ダウンロード］</a> <a href="#" class="knv-doc-link" data-doc="${d.replace(/"/g,'&quot;')}" style="color:#8FA5B3;font-size:11px;">［変更］</a></li>`;
           } else {
             status = 'unregistered';
-            html = `<li>${d} <a href="#" class="knv-doc-find" data-doc="${d.replace(/"/g,'&quot;')}" style="color:#8FA5B3;font-size:11px;">［様式を探す］</a> <a href="#" class="knv-doc-manual" data-doc="${d.replace(/"/g,'&quot;')}" style="color:#8FA5B3;font-size:11px;">［手動で登録］</a></li>`;
+            html = `<li>${d} <a href="#" class="knv-doc-find" data-doc="${d.replace(/"/g,'&quot;')}" style="color:#8FA5B3;font-size:11px;">［様式を探す］</a> <a href="#" class="knv-doc-manual" data-doc="${d.replace(/"/g,'&quot;')}" style="color:#8FA5B3;font-size:11px;">［手動で登録］</a> <a href="#" class="knv-doc-link" data-doc="${d.replace(/"/g,'&quot;')}" style="color:#F2A93B;font-size:11px;">［登録済みの様式から選ぶ］</a></li>`;
           }
         }
         const shouldShow = resultsFilterMode === 'all' || status === resultsFilterMode;
@@ -1746,6 +1761,35 @@
         document.getElementById('mtType').value = 'form';
         window.scrollTo({ top: document.getElementById('panel-company').offsetTop - 60, behavior: 'smooth' });
         document.getElementById('mtName').focus();
+      };
+    });
+    wrap.querySelectorAll('.knv-doc-link').forEach(a => {
+      a.onclick = (e) => {
+        e.preventDefault();
+        const li = a.closest('li');
+        let picker = li.nextElementSibling;
+        if (picker && picker.classList.contains('knv-doc-link-picker')){ picker.remove(); return; }
+        const forms = templateRegistry.map((t, i) => ({ t, i })).filter(x => (x.t.docType||'form') === 'form');
+        picker = document.createElement('li');
+        picker.className = 'knv-doc-link-picker';
+        picker.style.listStyle = 'none';
+        picker.style.margin = '4px 0 8px -18px';
+        if (!forms.length){
+          picker.innerHTML = '<span style="font-size:11px;color:#8FA5B3;">まだ様式が1件も登録されていません。先に「様式・マニュアル」タブで登録してください。</span>';
+        } else {
+          const sel = document.createElement('select');
+          sel.style.fontSize = '11.5px';
+          sel.innerHTML = '<option value="">選んでください…</option>' + forms.map(x => `<option value="${x.t.id}">${x.t.name}</option>`).join('');
+          sel.onchange = async () => {
+            if (!sel.value) return;
+            const dn = normalizeDocName(a.dataset.doc);
+            docLinkOverrides[dn] = sel.value;
+            await saveDocLinkOverrides();
+            renderResults();
+          };
+          picker.appendChild(sel);
+        }
+        li.insertAdjacentElement('afterend', picker);
       };
     });
     wrap.querySelectorAll('.knv-manual-open').forEach(a => {
@@ -2026,7 +2070,7 @@
       };
       card.appendChild(saveBtn);
     } catch(e){
-      container.innerHTML = '<div class="knv-sub" style="color:var(--red);">検索に失敗しました。時間をおいて再試行してください。</div>';
+      container.innerHTML = '<div class="knv-sub" style="color:var(--red);">検索に失敗しました：' + escapeHtml(e.message || '不明なエラー') + '</div>';
       if (statusEl) statusEl.textContent = '';
     }
   }
@@ -2092,7 +2136,7 @@
         notFound++;
         const row = document.createElement('div');
         row.className = 'knv-result-row';
-        row.innerHTML = '⚠ <b>' + docName + '</b>：検索中にエラーが発生しました。';
+        row.innerHTML = '⚠ <b>' + docName + '</b>：検索中にエラーが発生しました（' + escapeHtml(e.message||'不明なエラー') + '）。';
         resultWrap.appendChild(row);
       }
     }
@@ -2138,19 +2182,26 @@
   document.getElementById('bulkRegister').onclick = async () => {
     const fileInput = document.getElementById('bulkFiles');
     const status = document.getElementById('bulkStatus');
+    const detailWrap = document.getElementById('bulkDetail');
     if (!fileInput.files.length){ status.textContent = 'ファイルを選択してください。'; return; }
     const files = Array.from(fileInput.files);
-    let ok = 0, skipped = 0, needsReview = 0, duplicate = 0;
+    let ok = 0, needsReview = 0, duplicate = 0;
+    const problems = []; // { name, reason }
     status.textContent = '内容を読み取りながら登録中… (0/' + files.length + ')';
+    detailWrap.innerHTML = '';
     for (let i = 0; i < files.length; i++){
       const file = files[i];
       status.textContent = '内容を読み取りながら登録中… (' + (i+1) + '/' + files.length + '：' + file.name + ')';
-      if (file.size > 4.5 * 1024 * 1024){ skipped++; continue; }
+      if (file.size > 4.5 * 1024 * 1024){
+        problems.push({ name: file.name, reason: 'サイズ超過（' + (file.size/1024/1024).toFixed(1) + 'MB。上限4.5MB）' });
+        continue;
+      }
       try {
         const hash = await computeFileHash(file);
         if (findDuplicateTemplate(hash, file) >= 0){
           // 既に登録済みの内容と同じファイル。AI呼び出しをせずスキップ。
           duplicate++;
+          problems.push({ name: file.name, reason: '登録済みと同じ内容のため重複スキップ' });
           continue;
         }
         const base64 = await fileToBase64(file);
@@ -2190,13 +2241,20 @@
         // 1件ごとに保存しておく。途中で止まっても、ここまでの分は残る。
         await saveTemplateRegistry();
         if (ok % 5 === 0 || i === files.length - 1) renderTemplateRegistry();
-      } catch(e){ skipped++; }
+      } catch(e){
+        problems.push({ name: file.name, reason: '登録時にエラー（' + (e.message||'不明なエラー').slice(0,80) + '）' });
+      }
     }
     renderTemplateRegistry();
+    const skipped = problems.length - duplicate;
     status.textContent = ok + '件登録しました。' +
       (duplicate ? duplicate + '件は登録済みと同じ内容だったためスキップしました。' : '') +
       (needsReview ? 'うち' + needsReview + '件は内容を自動判定できず「要確認」を付けています（一覧の該当項目を確認してください）。' : '') +
-      (skipped ? skipped + '件はサイズ超過等で失敗しました。' : '');
+      (skipped ? skipped + '件は登録できませんでした（詳細は下を参照）。' : '');
+    if (problems.length){
+      const list = problems.map(p => '・' + p.name + '　→　' + p.reason).join('\n');
+      detailWrap.innerHTML = '<div class="knv-sub" style="white-space:pre-wrap;margin-top:6px;max-height:200px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;">' + escapeHtml(list) + '</div>';
+    }
     fileInput.value = '';
   };
 
@@ -2261,7 +2319,7 @@
       }
       status.textContent = '読み取り完了。書類名・メモ欄に自動入力しました。内容を確認して「登録する」を押してください。';
     } catch(e){
-      status.textContent = '読み取りに失敗しました。メモは手入力してください。';
+      status.textContent = '読み取りに失敗しました：' + (e.message || '不明なエラー');
     }
   };
 
@@ -2357,21 +2415,59 @@
     (rule.docs||[]).forEach(d => lines.push('・' + d));
     const text = lines.join('\n');
     wrap.innerHTML = '';
+
+    // このツールが実際に自動でできるのはここまで（データを1ヶ所にまとめること）で、
+    // 実物のWord/Excel様式に「見た目も整えて書き込む」作業は、この画面単体ではできない。
+    // 正直にその境界を示し、様式が登録されていればダウンロードへの導線もその場で出す。
+    const explain = document.createElement('div');
+    explain.className = 'knv-note';
+    explain.innerHTML = '<b>このツールでできること／できないこと</b><br>ここまでは、現場・会社・この書類固有の情報を1ヶ所に自動でまとめる作業です。実際のWord/Excel様式に見た目を整えて書き込む作業は、このページの中だけでは行えません（ブラウザの中だけでは、様式ファイルの構造を正しく読み取って書き込む処理が組めないためです）。下の手順で仕上げてください。';
+    wrap.appendChild(explain);
+
+    const ruleIdx = findTemplateForDocName(rule.name);
+    const fileCard = document.createElement('div');
+    fileCard.className = 'knv-card';
+    if (ruleIdx >= 0 && templateRegistry[ruleIdx].fileData){
+      const t = templateRegistry[ruleIdx];
+      fileCard.innerHTML = '<div class="knv-card-title">この書類の様式ファイル（登録済み）</div><div class="knv-result-row">「' + t.name + '」が登録されています。まずこれをダウンロードしてください。</div>';
+      const dlBtn = document.createElement('button');
+      dlBtn.className = 'knv-btn knv-btn-primary';
+      dlBtn.style.marginTop = '10px';
+      dlBtn.textContent = '様式ファイルをダウンロード';
+      dlBtn.onclick = () => {
+        const link = document.createElement('a');
+        link.href = 'data:' + (t.fileType||'application/octet-stream') + ';base64,' + t.fileData;
+        link.download = t.fileName || (t.name + '.dat');
+        document.body.appendChild(link); link.click(); document.body.removeChild(link);
+      };
+      fileCard.appendChild(dlBtn);
+    } else {
+      fileCard.innerHTML = '<div class="knv-card-title">この書類の様式ファイル</div><div class="knv-result-row" style="color:#8FA5B3;">まだこの書類の様式ファイルが登録されていません。「診断・結果」タブの該当書類から「様式を探す」または「手動で登録」をしてから、実物のファイルを用意してください。</div>';
+    }
+    wrap.appendChild(fileCard);
+
     const card = document.createElement('div');
     card.className = 'knv-card';
-    card.innerHTML = '<div class="knv-card-title">完成データ</div><textarea readonly style="min-height:220px;white-space:pre-wrap;">' + text + '</textarea>';
+    card.innerHTML = '<div class="knv-card-title">完成データ（このテキストを使って記入します）</div><textarea readonly style="min-height:220px;white-space:pre-wrap;">' + text + '</textarea>';
     wrap.appendChild(card);
-    const note = document.createElement('div');
-    note.className = 'knv-note';
-    note.innerHTML = '<b>次のステップ</b>：このテキストをコピーして、実物の様式ファイルと一緒にチャットに貼り付ければ、実際の書類に転記します。';
-    wrap.appendChild(note);
     const copyBtn = document.createElement('button');
     copyBtn.className = 'knv-btn knv-btn-primary';
-    copyBtn.textContent = 'コピーする';
+    copyBtn.textContent = 'テキストをコピーする';
     copyBtn.onclick = () => {
       navigator.clipboard.writeText(text).then(() => { copyBtn.textContent = 'コピーしました'; });
     };
     wrap.appendChild(copyBtn);
+
+    const stepsCard = document.createElement('div');
+    stepsCard.className = 'knv-card';
+    stepsCard.innerHTML = '<div class="knv-card-title">仕上げ方（このツールの外で行う作業）</div>' +
+      '<div class="knv-result-row">1.　上のボタンで様式ファイルをダウンロードする（登録が無ければ先に用意する）</div>' +
+      '<div class="knv-result-row">2.　上の「完成データ」を「テキストをコピーする」でコピーする</div>' +
+      '<div class="knv-result-row">3.　<a href="https://claude.ai/new" target="_blank" rel="noopener" style="color:#F2A93B;">claude.ai</a> を新しいタブで開き、新しい会話を始める</div>' +
+      '<div class="knv-result-row">4.　ダウンロードした様式ファイルを添付し、コピーしたテキストを貼り付けて「この様式にこの内容を記入してください」と送る</div>' +
+      '<div class="knv-result-row">5.　Claudeが実際に記入済みのファイルを作って返してくれます</div>' +
+      '<div class="knv-result-row" style="margin-top:6px;">※ 3〜5はこのGitHub Pagesのページの中ではなく、別のClaude.aiの画面で行う作業です。ここでAPIキーを使うこととは関係なく、Claude.aiの通常のチャット利用（無料または既存のプラン）でできます。</div>';
+    wrap.appendChild(stepsCard);
   }
 
   async function loadCompany(){
@@ -2626,7 +2722,7 @@
       renderCompanyForm();
       status.textContent = '読み取り完了。フォームに自動入力しました。' + mergeMsg + ' 確認のうえ保存してください。';
     } catch(e){
-      status.textContent = '読み取りに失敗しました。フォームに直接入力してください。';
+      status.textContent = '読み取りに失敗しました：' + (e.message || '不明なエラー');
     }
   }
   async function loadCompliance(){
@@ -2679,7 +2775,7 @@
     wrap.insertBefore(summary, wrap.firstChild);
   }
   document.getElementById('complianceProject').addEventListener('change', renderCompliance);
-  const BACKUP_KEYS = ['knv_custom_rules','knv_region','knv_projects','knv_template_registry','knv_orderers','knv_company','knv_compliance'];
+  const BACKUP_KEYS = ['knv_custom_rules','knv_region','knv_projects','knv_template_registry','knv_orderers','knv_company','knv_compliance','knv_doc_links'];
   async function exportBackup(){
     const status = document.getElementById('backupStatus');
     const data = {};
@@ -2763,6 +2859,7 @@
       document.getElementById('apiKeyStatus').textContent = anthropicApiKey ? '登録済みです。' : '未登録です。AI機能（自動読み取り・様式検索等）は動きません。';
     }
     await loadOrdererRegistry();
+    await loadDocLinkOverrides();
     await loadCompany();
     await loadCompliance();
     await loadProjects();
